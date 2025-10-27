@@ -471,7 +471,7 @@ readr::write_csv(results_compare_print, "auc_train_vs_test.csv")
 # 11)  Dose–response for IBI
 # ===============================
 
-
+# Generate predicted values
 lo <- as.numeric(quantile(train_df$IBI, 0.01, na.rm = TRUE))
 hi <- as.numeric(quantile(train_df$IBI, 0.99, na.rm = TRUE))
 step <- (hi - lo) / 200  # ~200 points
@@ -481,13 +481,26 @@ gg_ibi <- ggpredict(
   terms = sprintf("IBI [%.6f:%.6f by=%.6f]", lo, hi, step)
 )
 
-plot(gg_ibi) +
+# Build the ggplot object
+p_ibi <- plot(gg_ibi) +
   theme_minimal() +
   labs(
     title = "Continuous IBI dose–response (trimmed to 1st–99th pct)",
     x = "IBI",
     y = "Predicted Probability of CVD"
   )
+
+# Display
+print(p_ibi)
+
+# Save as PNG
+ggplot2::ggsave(
+  filename = "Continuous_IBI_DoseResponse.png",
+  plot = p_ibi,
+  width = 8, height = 6, dpi = 300
+)
+
+cat("[FILE SAVED] Continuous_IBI_DoseResponse.png\n")
 
 
 # ===============================
