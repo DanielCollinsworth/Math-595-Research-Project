@@ -338,8 +338,15 @@ cat("[FILE SAVED] auc_train_vs_test.csv\n")
 # 9) Plot Test ROC curves
 # ===============================
 # All 3 models 
-plot(roc1_test, col = "red", main = "Test ROC (2021–2023) — models trained on 2017–2020",
-     xlab = "1 - Specificity", ylab = "Sensitivity", lwd = 2)
+plot(
+  roc1_test,
+  col = "red",
+  main = "Test ROC (2021–2023) — models trained on 2017–2020",
+  xlab = "1 - Specificity (False Positive Rate)",
+  ylab = "Sensitivity (True Positive Rate)",
+  lwd = 2,
+  legacy.axes = TRUE  # flip x-axis direction to 0 → 1
+)
 lines(roc2_test, col = "blue", lwd = 2)
 lines(roc3_test, col = "green", lwd = 2)
 legend("bottomright",
@@ -350,8 +357,15 @@ legend("bottomright",
 
 # Save PNG
 png("ROC_Curves_TrainToTest.png", width = 800, height = 600)
-plot(roc1_test, col = "red", main = "Test ROC (2021–2023) — models trained on 2017–2020",
-     xlab = "1 - Specificity", ylab = "Sensitivity", lwd = 2)
+plot(
+  roc1_test,
+  col = "red",
+  main = "Test ROC (2021–2023) — models trained on 2017–2020",
+  xlab = "1 - Specificity (False Positive Rate)",
+  ylab = "Sensitivity (True Positive Rate)",
+  lwd = 2,
+  legacy.axes = TRUE  # flip x-axis direction to 0 → 1
+)
 lines(roc2_test, col = "blue", lwd = 2)
 lines(roc3_test, col = "green", lwd = 2)
 legend("bottomright",
@@ -359,6 +373,7 @@ legend("bottomright",
                   paste("Model 2:", round(auc2_test, 3)),
                   paste("Model 3:", round(auc3_test, 3))),
        col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
+
 dev.off()
 cat("[FILE SAVED] ROC_Curves_TrainToTest.png\n")
 
