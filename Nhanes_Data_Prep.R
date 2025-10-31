@@ -454,12 +454,12 @@ data.complete$PIR_Group <- cut(
 )
 
 # Set reference levels
-data.complete$Education      <- relevel(data.complete$Education, ref = "Below High School")
+data.complete$Education <- relevel(data.complete$Education, ref = "Below High School")
 data.complete$Smoking_status <- relevel(data.complete$Smoking_status, ref = "Never Smoker")
-data.complete$Alcohol        <- relevel(data.complete$Alcohol, ref = "Non-Drinker")
-data.complete$Diabetes       <- relevel(data.complete$Diabetes, ref = "No")
+data.complete$Alcohol <- relevel(data.complete$Alcohol, ref = "Non-Drinker")
+data.complete$Diabetes <- relevel(data.complete$Diabetes, ref = "No")
 data.complete$Smoking_status <- relevel(data.complete$Smoking_status, ref = "Never Smoker")
-data.complete$BMI_Group      <- relevel(data.complete$BMI_Group, ref = "Normal")
+data.complete$BMI_Group <- relevel(data.complete$BMI_Group, ref = "Normal")
 
 # save dataset
 saveRDS(data.complete, file = "data_complete_cleaned.rds")
@@ -478,12 +478,12 @@ summary(tab1, text = TRUE, pfootnote = TRUE)
 
 library(survey)
 data.design <- svydesign(
-  id                = ~SDMVPSU,
-  strata            = ~SDMVSTRA,
-  weights           = ~WTMEC2YR,
-  nest              = TRUE,
+  id = ~SDMVPSU,
+  strata = ~SDMVSTRA,
+  weights  = ~WTMEC2YR,
+  nest  = TRUE,
   survey.lonely.psu = "adjust",
-  data              = data.complete
+  data = data.complete
 )
 
 summary(data.design)

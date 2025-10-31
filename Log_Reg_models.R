@@ -1,5 +1,4 @@
-# start Logging
-sink("run_log.txt", split = TRUE)
+
 
 # ===============================
 # 1) Libraries
@@ -17,25 +16,47 @@ library(ggeffects)
 # 2) Load data
 # ===============================
 data.complete <- readRDS("data_complete_cleaned.rds")
+# str(data.complete)
+
 
 cat("\n[INFO] Data loaded:\n")
 cat(" - Rows:", nrow(data.complete), "  Cols:", ncol(data.complete), "\n")
-cat(" - Cycles present:", paste(unique(as.character(data.complete$Cycle)), collapse=", "), "\n")
-
+cat(" - Cycle L Rows: ", sum(data.complete$Cycle == "L"))
+cat(" - Cycle P Rows: ", sum(data.complete$Cycle == "P"))
 
 # ===============================
-# 3) Split by cycle
+# 3) Split by cycle & build IBI quartiles on TRAIN
 # ===============================
 train_df <- subset(data.complete, Cycle == "P")  # 2017–2020
 test_df  <- subset(data.complete, Cycle == "L")  # 2021–2023
 
-# Quartiles on train and cut both sets
+# Quartiles on  IBI
 ibi_quartiles <- quantile(train_df$IBI, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
-cut_ibi <- function(x, breaks) cut(x, breaks = breaks, labels = c("Q1","Q2","Q3","Q4"), include.lowest = TRUE)
+
+# function to cut into quartiles
+cut_ibi <- function(x, breaks) {
+  cut(x, breaks = breaks, labels = c("Q1","Q2","Q3","Q4"),
+      include.lowest = TRUE, right = TRUE, ordered_result = TRUE)
+}
 
 train_df$IBI_Category <- cut_ibi(train_df$IBI, ibi_quartiles)
 test_df$IBI_Category  <- cut_ibi(test_df$IBI,  ibi_quartiles)
-train_df$IBI_Category <- stats::relevel(train_df$IBI_Category, ref = "Q1")
+
+# factor and revel quartiles
+train_df$IBI_Category <- factor(as.character(train_df$IBI_Category),
+                                levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
+train_df$IBI_Category <- relevel(train_df$IBI_Category, ref = "Q1")
+
+
+test_df$IBI_Category <- factor(as.character(test_df$IBI_Category),
+                               levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
+test_df$IBI_Category <- relevel(test_df$IBI_Category, ref = "Q1")
+
+
+# Quartiles as Numeric 1-4 
+train_df$IBI_QuartileNum <- as.numeric(train_df$IBI_Category)
+test_df$IBI_QuartileNum  <- as.numeric(test_df$IBI_Category)
+
 
 # Target encodings
 train_df$CVD <- factor(train_df$CVD, levels = c("No","Yes"))
@@ -43,35 +64,54 @@ test_df$CVD  <- factor(test_df$CVD,  levels = c("No","Yes"))
 train_df$CVD_num <- as.integer(train_df$CVD == "Yes")
 test_df$CVD_num  <- as.integer(test_df$CVD  == "Yes")
 
+# size and cutoffs
+cat("\n[SECTION 3 SUMMARY]\n")
+cat(" - Train rows (Cycle P):", nrow(train_df), "\n")
+cat(" - Test  rows (Cycle L):", nrow(test_df),  "\n")
+cat(" - Quartile cutpoints (IBI, raw on TRAIN):\n"); print(ibi_quartiles)
+
 
 # ===============================
 # 4) Build survey design on Training data
 # ===============================
 train_design <- svydesign(
-  id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
-  nest = TRUE, survey.lonely.psu = "adjust",
+  id = ~SDMVPSU,
+  strata = ~SDMVSTRA,
+  weights  = ~WTMEC2YR,
+  nest  = TRUE,
+  survey.lonely.psu = "adjust",
   data = train_df
 )
 
 
 # ===============================
-# 5) Train weighted logistic models
+# 5) build Models and find OPs and CIs
 # ===============================
 cat("\n[FIT] Model 1: IBI only\n")
-model1 <- svyglm(CVD ~ IBI_Category, design = train_design, family = quasibinomial("logit"))
+model1 <- svyglm(CVD ~ IBI_Category, design = train_design, family = binomial("logit"))
 print(summary(model1))
 
 cat("\n[FIT] Model 2: + Demographics\n")
 model2 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education,
-                 design = train_design, family = quasibinomial("logit"))
+                 design = train_design, family = binomial("logit"))
 print(summary(model2))
 
 cat("\n[FIT] Model 3: Fully adjusted\n")
 model3 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education +
                    Smoking_status + Alcohol + BMI + Diabetes +
                    TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
-                 design = train_design, family = quasibinomial("logit"))
+                 design = train_design, family = binomial("logit"))
 print(summary(model3))
+
+
+
+cat("\n[FIT] Model 3: Fully adjusted\n")
+model3_Q_Num <- svyglm(CVD ~ IBI_QuartileNum + Age + Gender + Ethnicity + Education +
+                   Smoking_status + Alcohol + BMI + Diabetes +
+                   TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
+                 design = train_design, family = binomial("logit"))
+print(summary(model3_Q_Num))
+
 
 
 # ===============================
@@ -90,13 +130,14 @@ cat("\n[TEST prevalence]\n")
 prev <- with(test_df, stats::weighted.mean(CVD_num, WTMEC2YR, na.rm = TRUE))
 cat(" - Weighted prevalence of CVD (Yes):", round(prev, 3), "\n")
 
-# Weighted baseline accuracy, i.e. majority class
+
+# Weighted baseline accuracy, i.e. majority class % of total
 baseline_w_acc <- max(prev, 1 - prev)
 cat(" - Weighted baseline accuracy (majority class):", round(baseline_w_acc, 3), "\n")
 
 
 
-# Function to get Weighted metrics at a given threshold
+# Function to get performance metrics at a given threshold
   # Takes in predictions, target, weights, threshold
 weighted_metrics <- function(pred, y, w, thr) {
   pred_cls <- ifelse(pred >= thr, 1L, 0L)
@@ -122,15 +163,15 @@ weighted_metrics <- function(pred, y, w, thr) {
                NA_real_, (5 * ppv * sens) / (4 * ppv + sens))
   
   tibble::tibble(
-    Threshold            = thr,
-    Weighted_Accuracy    = round(acc, 3),
-    Weighted_Recall      = round(sens, 3),
+    Threshold = thr,
+    Weighted_Accuracy  = round(acc, 3),
+    Weighted_Recall = round(sens, 3),
     Weighted_Specificity = round(spec, 3),
-    Weighted_Precision   = round(ppv, 3),
-    Weighted_NPV         = round(npv, 3),
-    LR_Positive          = round(lr_pos_raw, 3),
-    LR_Negative          = round(lr_neg_raw, 3),
-    Weighted_F2          = round(f2, 3)
+    Weighted_Precision = round(ppv, 3),
+    Weighted_NPV  = round(npv, 3),
+    LR_Positive  = round(lr_pos_raw, 3),
+    LR_Negative = round(lr_neg_raw, 3),
+    Weighted_F2 = round(f2, 3)
   )
 }
 
@@ -143,7 +184,7 @@ metrics_05 <- dplyr::bind_rows(metrics1_test, metrics2_test, metrics3_test)
 cat("\n[WEIGHTED METRICS @ 0.5]\n"); print(metrics_05)
 
 # ===============================
-# 7) ROC/AUC/Metrics (Test data) – weighted
+# 7) ROC/AUC/Metrics (Test data)
 # ===============================
 roc1_test <- pROC::roc(test_df$CVD, test_df$pred1, levels = c("No","Yes"),
                        weights = test_df$WTMEC2YR, quiet = TRUE)
@@ -162,10 +203,10 @@ cat(" - Model 2 (Demographics):  ", round(auc2_test, 3), "\n")
 cat(" - Model 3 (Full):          ", round(auc3_test, 3), "\n")
 
 
-# ===============================
-# 7b) Youden thresholds on TEST (weighted)
-# ===============================
 
+# 7b) Youden thresholds 
+
+# function to find youden info
 youden_info <- function(roc_obj) {
   # Returns threshold, sensitivity, specificity, and J = sens + spec - 1
   cs <- pROC::coords(
@@ -179,10 +220,10 @@ youden_info <- function(roc_obj) {
   sens <- as.numeric(cs[1, "sensitivity"])
   spec <- as.numeric(cs[1, "specificity"])
   data.frame(
-    Threshold   = thr,
+    Threshold = thr,
     Sensitivity = sens,
     Specificity = spec,
-    J           = sens + spec - 1
+    J = sens + spec - 1
   )
 }
 
@@ -199,7 +240,7 @@ youden_tbl <- dplyr::bind_rows(
 
 cat("\n[YOUDEN THRESHOLDS on TEST]\n"); print(youden_tbl)
 
-# Evaluate weighted metrics at each model's Youden cutoff
+# Evaluate weighted metrics at each model's Youden threshold
 metrics1_youden <- with(test_df, weighted_metrics(pred1, CVD_num, WTMEC2YR, thr = youden1$Threshold))
 metrics2_youden <- with(test_df, weighted_metrics(pred2, CVD_num, WTMEC2YR, thr = youden2$Threshold))
 metrics3_youden <- with(test_df, weighted_metrics(pred3, CVD_num, WTMEC2YR, thr = youden3$Threshold))
@@ -212,14 +253,10 @@ metrics_youden <- dplyr::bind_rows(
 
 cat("\n[WEIGHTED METRICS @ YOUDEN THRESHOLD]\n"); print(metrics_youden)
 
-# Save both tables
-readr::write_csv(youden_tbl, "youden_thresholds_test.csv")
-readr::write_csv(metrics_youden, "metrics_at_youden_threshold_test.csv")
-cat("[FILES SAVED] youden_thresholds_test.csv, metrics_at_youden_threshold_test.csv\n")
 
-# ===============================
-# 7c) Model 3 cutoff calibration: Youden, Rule-in, Rule-out, Closest.topleft
-# ===============================
+
+
+# 7c) Model 3 cutoff calibration: Youden, Rule-in, Rule-out, Closest topleft
 
 # Helper - ROC coords
 roc_all <- pROC::coords(
@@ -234,7 +271,8 @@ roc_all <- dplyr::mutate(
   dist_topleft = sqrt((1 - sensitivity)^2 + (1 - specificity)^2) # distance to (0,1)
 )
 
-# Get a row for each index 
+# Get a row for each different index 
+
 # 1) Youden J (maximize J)
 youden_row <- roc_all[which.max(roc_all$J), , drop = FALSE]
 
@@ -247,7 +285,7 @@ rulein_row <- if (nrow(rulein_pool)) {
   roc_all[which.max(roc_all$specificity), , drop = FALSE]
 }
 
-# 3) Rule-out,  choose the with max specificity with sensitivity >= 0.95
+# 3) Rule-out, choose the with max specificity with sensitivity >= 0.95
 ruleout_pool <- dplyr::filter(roc_all, sensitivity >= 0.95)
 ruleout_row <- if (nrow(ruleout_pool)) {
   ruleout_pool[which.max(ruleout_pool$specificity), , drop = FALSE]
@@ -286,10 +324,6 @@ metrics_m3_cal <- dplyr::bind_rows(m3_metrics_list) |>
 
 cat("\n[MODEL 3: Weighted metrics at candidate thresholds]\n"); print(metrics_m3_cal)
 
-# Save
-readr::write_csv(thr_tbl_m3, "model3_thresholds_calibration.csv")
-readr::write_csv(metrics_m3_cal, "model3_metrics_at_calibrated_thresholds.csv")
-cat("[FILES SAVED] model3_thresholds_calibration.csv, model3_metrics_at_calibrated_thresholds.csv\n")
 
 
 # Single view for thresholds + full metrics for Model 3
@@ -307,9 +341,6 @@ m3_summary <- thr_tbl_m3 |>
   dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 3)))
 
 cat("\n[MODEL 3: Calibrated thresholds + full metrics]\n"); print(m3_summary)
-readr::write_csv(m3_summary, "model3_calibrated_thresholds_full_metrics.csv")
-cat("[FILE SAVED] model3_calibrated_thresholds_full_metrics.csv\n")
-
 
 # ===============================
 # 8) Train-set ROC/AUC (unweighted)
@@ -318,9 +349,14 @@ train_df$pred1_tr <- predict(model1, type = "response")
 train_df$pred2_tr <- predict(model2, type = "response")
 train_df$pred3_tr <- predict(model3, type = "response")
 
-roc1_train <- pROC::roc(train_df$CVD, train_df$pred1_tr, levels = c("No","Yes"), quiet = TRUE)
-roc2_train <- pROC::roc(train_df$CVD, train_df$pred2_tr, levels = c("No","Yes"), quiet = TRUE)
-roc3_train <- pROC::roc(train_df$CVD, train_df$pred3_tr, levels = c("No","Yes"), quiet = TRUE)
+
+roc1_train <- pROC::roc(train_df$CVD, train_df$pred1_tr, levels = c("No","Yes"),
+                        weights = train_df$WTMEC2YR, quiet = TRUE)
+roc2_train <- pROC::roc(train_df$CVD, train_df$pred2_tr, levels = c("No","Yes"),
+                        weights = train_df$WTMEC2YR, quiet = TRUE)
+roc3_train <- pROC::roc(train_df$CVD, train_df$pred3_tr, levels = c("No","Yes"),
+                        weights = train_df$WTMEC2YR, quiet = TRUE)
+
 
 results_compare <- data.frame(
   Model = c("Model 1","Model 2","Model 3"),
@@ -330,9 +366,9 @@ results_compare <- data.frame(
 
 results_compare_print <- dplyr::mutate(results_compare,
                                        dplyr::across(where(is.numeric), ~ round(.x, 3)))
+
 cat("\n[AUC TRAIN vs TEST]\n"); print(results_compare_print)
-readr::write_csv(results_compare_print, "auc_train_vs_test.csv")
-cat("[FILE SAVED] auc_train_vs_test.csv\n")
+
 
 # ===============================
 # 9) Plot Test ROC curves
@@ -342,8 +378,8 @@ plot(
   roc1_test,
   col = "red",
   main = "Test ROC (2021–2023) — models trained on 2017–2020",
-  xlab = "1 - Specificity (False Positive Rate)",
-  ylab = "Sensitivity (True Positive Rate)",
+  xlab = "1 - Specificity",
+  ylab = "Sensitivity",
   lwd = 2,
   legacy.axes = TRUE  # flip x-axis direction to 0 → 1
 )
@@ -354,29 +390,6 @@ legend("bottomright",
                   paste("Model 2:", round(auc2_test, 3)),
                   paste("Model 3:", round(auc3_test, 3))),
        col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
-
-# Save PNG
-png("ROC_Curves_TrainToTest.png", width = 800, height = 600)
-plot(
-  roc1_test,
-  col = "red",
-  main = "Test ROC (2021–2023) — models trained on 2017–2020",
-  xlab = "1 - Specificity (False Positive Rate)",
-  ylab = "Sensitivity (True Positive Rate)",
-  lwd = 2,
-  legacy.axes = TRUE  # flip x-axis direction to 0 → 1
-)
-lines(roc2_test, col = "blue", lwd = 2)
-lines(roc3_test, col = "green", lwd = 2)
-legend("bottomright",
-       legend = c(paste("Model 1:", round(auc1_test, 3)),
-                  paste("Model 2:", round(auc2_test, 3)),
-                  paste("Model 3:", round(auc3_test, 3))),
-       col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
-
-dev.off()
-cat("[FILE SAVED] ROC_Curves_TrainToTest.png\n")
-
 
 
 # Weighted precision–recall curve for Model 3
@@ -391,7 +404,7 @@ cat("Weighted PR-AUC (Model 3):", round(wpr_auc, 3), "\n")
 
 
 # ===============================
-# 10) Continuous IBI and model with splines
+# 10) Continuous IBI and model with spline
 # ===============================
 
 # Continuous IBI
@@ -399,7 +412,7 @@ model3_cont <- svyglm(CVD ~ IBI + Age + Gender + Ethnicity + Education +
                         Smoking_status + Alcohol + BMI + Diabetes +
                         TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
                       design = train_design, family = quasibinomial("logit"))
-
+print(summary(model3_cont))
 # Splines for IBI
 model3_spline <- svyglm(CVD ~ ns(IBI, df = 3) + Age + Gender + Ethnicity + Education +
                           Smoking_status + Alcohol + BMI + Diabetes +
@@ -418,13 +431,13 @@ cat("  IBI continuous: ", round(pROC::auc(roc3_cont),   3), "\n")
 cat("  IBI spline:     ", round(pROC::auc(roc3_spline), 3), "\n")
 
 
-# ===============================
-# 10b) IBI as binary (top quartile vs others), fully adjusted model
-# ===============================
+
+
+# 10b) IBI as binary (top ha;f vs bottom half)
 
 # Create binary on train and test using existing quartiles
-train_df$IBI_high <- as.integer(train_df$IBI >= ibi_quartiles[4])
-test_df$IBI_high  <- as.integer(test_df$IBI  >= ibi_quartiles[4])
+train_df$IBI_high <- as.integer(train_df$IBI >= ibi_quartiles[3])
+test_df$IBI_high  <- as.integer(test_df$IBI  >= ibi_quartiles[3])
 
 train_design <- svydesign(
   id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
@@ -439,10 +452,10 @@ model3_binary <- svyglm(
     TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
   design = train_design, family = quasibinomial("logit")
 )
-cat("\n[FIT] Model 3 (IBI binary: Q4 vs others)\n"); print(summary(model3_binary))
+cat("\n[FIT] Model 3 (IBI binary: Q3-4 vs Q1-2)\n"); print(summary(model3_binary))
 
 
-# Predict on TRAIN data
+# Predict on train data
 train_df$pred3_binary <- predict(model3_binary, type = "response")
 
 roc3_binary_train <- pROC::roc(
@@ -470,7 +483,7 @@ cat("  IBI binary (Q4 vs others): ", round(auc3_binary, 3), "\n")
 # Compare continuous, spline, and binary models
 results_compare2 <- results_compare |>
   dplyr::bind_rows(tibble::tibble(
-    Model     = "Model 3 (IBI binary)",
+    Model = "Model 3 (IBI binary)",
     Train_AUC = as.numeric(auc3_binary_train),
     Test_AUC  = as.numeric(auc3_binary)
   ))
@@ -480,91 +493,66 @@ results_compare_print <- results_compare2 |>
   dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 3)))
 
 cat("\n[AUC TRAIN vs TEST] (updated with binary IBI)\n"); print(results_compare_print)
-readr::write_csv(results_compare_print, "auc_train_vs_test.csv")
 
 # ===============================
 # 11)  Dose–response for IBI
 # ===============================
 
-# Generate predicted values
-lo <- as.numeric(quantile(train_df$IBI, 0.01, na.rm = TRUE))
-hi <- as.numeric(quantile(train_df$IBI, 0.99, na.rm = TRUE))
-step <- (hi - lo) / 200  # ~200 points
-
-gg_ibi <- ggpredict(
-  model3_cont,
-  terms = sprintf("IBI [%.6f:%.6f by=%.6f]", lo, hi, step)
+# Use the trend model (numeric quartile score) to get fitted probabilities
+gg_ibi_quart <- ggpredict(
+  model3_Q_Num,
+  terms = "IBI_QuartileNum [1:4]"   # predicts for quartiles 1, 2, 3, 4
 )
+summary(model3)
+
+# Optional: relabel quartiles nicely for the plot
+gg_ibi_quart$x <- factor(gg_ibi_quart$x, labels = c("Q1", "Q2", "Q3", "Q4"))
 
 # Build the ggplot object
-p_ibi <- plot(gg_ibi) +
+p_ibi_quart <- plot(gg_ibi_quart) +
   theme_minimal() +
   labs(
-    title = "Continuous IBI dose–response (trimmed to 1st–99th pct)",
-    x = "IBI",
+    title = "Predicted Probability of CVD by IBI Quartile",
+    x = "IBI Quartile",
     y = "Predicted Probability of CVD"
+  ) +
+  geom_point(size = 3) +
+  geom_line(group = 1, linewidth = 1) +
+  ylim(0, NA) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11)
   )
 
 # Display
-print(p_ibi)
+print(p_ibi_quart)
 
-# Save as PNG
-ggplot2::ggsave(
-  filename = "Continuous_IBI_DoseResponse.png",
-  plot = p_ibi,
-  width = 8, height = 6, dpi = 300
+
+# dose response with spline
+ibi_range <- quantile(train_df$IBI, probs = c(0.01, 0.99), na.rm = TRUE)
+gg_ibi_spline <- ggpredict(
+  model3_spline,
+  terms = sprintf("IBI [%.4f:%.4f]", ibi_range[1], ibi_range[2])
 )
 
-cat("[FILE SAVED] Continuous_IBI_DoseResponse.png\n")
+# 3. Plot the dose–response curve
+library(ggplot2)
+p_spline <- plot(gg_ibi_spline) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Dose–Response Relationship Between IBI and CVD",
+    x = "IBI",
+    y = "Predicted Probability of CVD"
+  ) +
+  geom_line(linewidth = 1.2, color = "#0072B2") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, fill = "#0072B2") +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11)
+  )
 
+# Display
+print(p_spline)
 
-# ===============================
-# 12) Save models & other objects
-# ===============================
-saveRDS(model1, "model1_ibi_only_trainP.rds")
-saveRDS(model2, "model2_demographic_adjusted_trainP.rds")
-saveRDS(model3, "model3_fully_adjusted_trainP.rds")
-saveRDS(roc1_test, "roc_model1_testL.rds")
-saveRDS(roc2_test, "roc_model2_testL.rds")
-saveRDS(roc3_test, "roc_model3_testL.rds")
-saveRDS(ibi_quartiles, "ibi_quartiles_trainP.rds")
-saveRDS(model3_cont,   "model3_cont_trainP.rds")
-saveRDS(model3_spline, "model3_spline_trainP.rds")
-saveRDS(model3_binary, "model3_binary_trainP.rds")
-saveRDS(roc3_cont,     "roc_model3_cont_testL.rds")
-saveRDS(roc3_spline,   "roc_model3_spline_testL.rds")
-saveRDS(roc3_binary,   "roc_model3_binary_testL.rds")
-saveRDS(roc3_binary_train, "roc_model3_binary_trainP.rds")
-readr::write_csv(
-  dplyr::transmute(test_df, SEQN, CVD, CVD_num, pred1, pred2, pred3, WTMEC2YR),
-  "test_predictions_L.csv"
-)
-
-cat("\n[FILES SAVED]\n",
-    "- model1_ibi_only_trainP.rds\n",
-    "- model2_demographic_adjusted_trainP.rds\n",
-    "- model3_fully_adjusted_trainP.rds\n",
-    "- roc_model1_testL.rds\n",
-    "- roc_model2_testL.rds\n",
-    "- roc_model3_testL.rds\n",
-    "- ibi_quartiles_trainP.rds\n",
-    "- test_predictions_L.csv\n",
-    "- model3_cont_trainP.rds\n",
-    "- model3_spline_trainP.rds\n",
-    "- model3_binary_trainP.rds\n",
-    "- roc_model3_cont_testL.rds\n",
-    "- roc_model3_spline_testL.rds\n",
-    "- roc_model3_binary_testL.rds\n",
-    "- roc_model3_binary_trainP.rds"
-    )
-
-
-
-writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
-cat("[FILE SAVED] sessionInfo.txt\n")
-
-utils::savehistory("Rhistory_this_run.Rhistory")
-
-
-# End logging 
-sink()
