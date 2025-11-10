@@ -17,7 +17,7 @@ library(ggeffects)
 # ===============================
 data.complete <- readRDS("data_complete_cleaned.rds")
 # str(data.complete)
-
+# head(data.complete)
 
 cat("\n[INFO] Data loaded:\n")
 cat(" - Rows:", nrow(data.complete), "  Cols:", ncol(data.complete), "\n")
@@ -29,6 +29,8 @@ cat(" - Cycle P Rows: ", sum(data.complete$Cycle == "P"))
 # ===============================
 train_df <- subset(data.complete, Cycle == "P")  # 2017–2020
 test_df  <- subset(data.complete, Cycle == "L")  # 2021–2023
+
+
 
 # Quartiles on  IBI
 ibi_quartiles <- quantile(train_df$IBI, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
@@ -418,6 +420,8 @@ model3_spline <- svyglm(CVD ~ ns(IBI, df = 3) + Age + Gender + Ethnicity + Educa
                           Smoking_status + Alcohol + BMI + Diabetes +
                           TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
                         design = train_design, family = quasibinomial("logit"))
+summary(model3_cont)
+summary(model3_spline)
 
 # Compare TEST AUCs for these
 test_df$pred3_cont   <- predict(model3_cont,   newdata=test_df, type="response")
@@ -529,30 +533,5 @@ p_ibi_quart <- plot(gg_ibi_quart) +
 print(p_ibi_quart)
 
 
-# dose response with spline
-ibi_range <- quantile(train_df$IBI, probs = c(0.01, 0.99), na.rm = TRUE)
-gg_ibi_spline <- ggpredict(
-  model3_spline,
-  terms = sprintf("IBI [%.4f:%.4f]", ibi_range[1], ibi_range[2])
-)
 
-# 3. Plot the dose–response curve
-library(ggplot2)
-p_spline <- plot(gg_ibi_spline) +
-  theme_minimal(base_size = 13) +
-  labs(
-    title = "Dose–Response Relationship Between IBI and CVD",
-    x = "IBI",
-    y = "Predicted Probability of CVD"
-  ) +
-  geom_line(linewidth = 1.2, color = "#0072B2") +
-  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, fill = "#0072B2") +
-  theme(
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    axis.title = element_text(size = 12),
-    axis.text = element_text(size = 11)
-  )
-
-# Display
-print(p_spline)
 

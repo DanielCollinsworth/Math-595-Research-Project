@@ -1,24 +1,4 @@
 
-> # start Logging
-Warning message:
-In file.info(path, extra_cols = FALSE) :
-  cannot open file 'C:/Users/danie/AppData/Local/Microsoft/WindowsApps/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/python.exe': The file cannot be accessed by the system
-> sink("run_log.txt", split = TRUE)
-> 
-> # ===============================
-> # 1) Libraries
-> # ===============================
-> library(survey)
-Loading required package: grid
-Loading required package: Matrix
-Loading required package: survival
-
-Attaching package: ‘survey’
-
-The following object is masked from ‘package:graphics’:
-
-    dotchart
-
 > library(pROC)
 Type 'citation("pROC")' for a citation.
 
@@ -60,29 +40,52 @@ The following object is masked from ‘package:survival’:
 > # 2) Load data
 > # ===============================
 > data.complete <- readRDS("data_complete_cleaned.rds")
+> # str(data.complete)
+> # head(data.complete)
 > 
 > cat("\n[INFO] Data loaded:\n")
 
 [INFO] Data loaded:
 > cat(" - Rows:", nrow(data.complete), "  Cols:", ncol(data.complete), "\n")
- - Rows: 8820   Cols: 44 
-> cat(" - Cycles present:", paste(unique(as.character(data.complete$Cycle)), collapse=", "), "\n")
- - Cycles present: L, P 
-> 
-> 
+ - Rows: 10336   Cols: 41 
+> cat(" - Cycle L Rows: ", sum(data.complete$Cycle == "L"))
+ - Cycle L Rows:  4218> cat(" - Cycle P Rows: ", sum(data.complete$Cycle == "P"))
+ - Cycle P Rows:  6118> 
 > # ===============================
-> # 3) Split by cycle
+> # 3) Split by cycle & build IBI quartiles on TRAIN
 > # ===============================
 > train_df <- subset(data.complete, Cycle == "P")  # 2017–2020
 > test_df  <- subset(data.complete, Cycle == "L")  # 2021–2023
 > 
-> # Quartiles on train and cut both sets
+> 
+> 
+> # Quartiles on  IBI
 > ibi_quartiles <- quantile(train_df$IBI, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
-> cut_ibi <- function(x, breaks) cut(x, breaks = breaks, labels = c("Q1","Q2","Q3","Q4"), include.lowest = TRUE)
+> 
+> # function to cut into quartiles
+> cut_ibi <- function(x, breaks) {
++   cut(x, breaks = breaks, labels = c("Q1","Q2","Q3","Q4"),
++       include.lowest = TRUE, right = TRUE, ordered_result = TRUE)
++ }
 > 
 > train_df$IBI_Category <- cut_ibi(train_df$IBI, ibi_quartiles)
 > test_df$IBI_Category  <- cut_ibi(test_df$IBI,  ibi_quartiles)
-> train_df$IBI_Category <- stats::relevel(train_df$IBI_Category, ref = "Q1")
+> 
+> # factor and revel quartiles
+> train_df$IBI_Category <- factor(as.character(train_df$IBI_Category),
++                                 levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
+> train_df$IBI_Category <- relevel(train_df$IBI_Category, ref = "Q1")
+> 
+> 
+> test_df$IBI_Category <- factor(as.character(test_df$IBI_Category),
++                                levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
+> test_df$IBI_Category <- relevel(test_df$IBI_Category, ref = "Q1")
+> 
+> 
+> # Quartiles as Numeric 1-4 
+> train_df$IBI_QuartileNum <- as.numeric(train_df$IBI_Category)
+> test_df$IBI_QuartileNum  <- as.numeric(test_df$IBI_Category)
+> 
 > 
 > # Target encodings
 > train_df$CVD <- factor(train_df$CVD, levels = c("No","Yes"))
@@ -90,28 +93,46 @@ The following object is masked from ‘package:survival’:
 > train_df$CVD_num <- as.integer(train_df$CVD == "Yes")
 > test_df$CVD_num  <- as.integer(test_df$CVD  == "Yes")
 > 
+> # size and cutoffs
+> cat("\n[SECTION 3 SUMMARY]\n")
+
+[SECTION 3 SUMMARY]
+> cat(" - Train rows (Cycle P):", nrow(train_df), "\n")
+ - Train rows (Cycle P): 6118 
+> cat(" - Test  rows (Cycle L):", nrow(test_df),  "\n")
+ - Test  rows (Cycle L): 4218 
+> cat(" - Quartile cutpoints (IBI, raw on TRAIN):\n"); print(ibi_quartiles)
+ - Quartile cutpoints (IBI, raw on TRAIN):
+          0%          25%          50%          75%         100% 
+4.418182e-02 1.484053e+00 3.737348e+00 9.079142e+00 2.050837e+03 
+> 
 > 
 > # ===============================
 > # 4) Build survey design on Training data
 > # ===============================
 > train_design <- svydesign(
-+   id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
-+   nest = TRUE, survey.lonely.psu = "adjust",
++   id = ~SDMVPSU,
++   strata = ~SDMVSTRA,
++   weights  = ~WTMEC2YR,
++   nest  = TRUE,
++   survey.lonely.psu = "adjust",
 +   data = train_df
 + )
 > 
 > 
 > # ===============================
-> # 5) Train weighted logistic models
+> # 5) build Models and find OPs and CIs
 > # ===============================
 > cat("\n[FIT] Model 1: IBI only\n")
 
 [FIT] Model 1: IBI only
-> model1 <- svyglm(CVD ~ IBI_Category, design = train_design, family = quasibinomial("logit"))
+> model1 <- svyglm(CVD ~ IBI_Category, design = train_design, family = binomial("logit"))
+Warning message:
+In eval(family$initialize) : non-integer #successes in a binomial glm!
 > print(summary(model1))
 
 Call:
-svyglm(formula = CVD ~ IBI_Category, design = train_design, family = quasibinomial("logit"))
+svyglm(formula = CVD ~ IBI_Category, design = train_design, family = binomial("logit"))
 
 Survey design:
 svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
@@ -119,14 +140,14 @@ svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
 
 Coefficients:
                Estimate Std. Error t value Pr(>|t|)    
-(Intercept)     -2.9030     0.1430 -20.302 9.74e-16 ***
-IBI_CategoryQ2   0.5239     0.1868   2.805   0.0103 *  
-IBI_CategoryQ3   1.0060     0.2088   4.818 8.19e-05 ***
-IBI_CategoryQ4   0.8604     0.1642   5.240 2.95e-05 ***
+(Intercept)     -2.9307     0.1475 -19.868 1.53e-15 ***
+IBI_CategoryQ2   0.6247     0.1785   3.499  0.00203 ** 
+IBI_CategoryQ3   0.9767     0.1938   5.039 4.79e-05 ***
+IBI_CategoryQ4   1.0483     0.1699   6.170 3.29e-06 ***
 ---
 Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
-(Dispersion parameter for quasibinomial family taken to be 1.000192)
+(Dispersion parameter for binomial family taken to be 1.000163)
 
 Number of Fisher Scoring iterations: 5
 
@@ -135,12 +156,14 @@ Number of Fisher Scoring iterations: 5
 
 [FIT] Model 2: + Demographics
 > model2 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education,
-+                  design = train_design, family = quasibinomial("logit"))
++                  design = train_design, family = binomial("logit"))
+Warning message:
+In eval(family$initialize) : non-integer #successes in a binomial glm!
 > print(summary(model2))
 
 Call:
 svyglm(formula = CVD ~ IBI_Category + Age + Gender + Ethnicity + 
-    Education, design = train_design, family = quasibinomial("logit"))
+    Education, design = train_design, family = binomial("logit"))
 
 Survey design:
 svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
@@ -148,21 +171,21 @@ svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
 
 Coefficients:
                              Estimate Std. Error t value Pr(>|t|)    
-(Intercept)                 -6.752491   0.327379 -20.626 2.02e-12 ***
-IBI_CategoryQ2               0.320855   0.189063   1.697 0.110327    
-IBI_CategoryQ3               0.710645   0.199648   3.559 0.002853 ** 
-IBI_CategoryQ4               0.660267   0.181188   3.644 0.002399 ** 
-Age                          0.074060   0.003954  18.728 8.16e-12 ***
-GenderFemale                -0.404228   0.126933  -3.185 0.006155 ** 
-EthnicityNon-Hispanic Black  0.844438   0.203119   4.157 0.000842 ***
-EthnicityNon-Hispanic White  0.690410   0.186912   3.694 0.002167 ** 
-EthnicityOther Muti-Racial   0.607525   0.269046   2.258 0.039274 *  
-EducationAbove High School  -1.032850   0.214353  -4.818 0.000226 ***
-EducationHigh School        -0.502951   0.232588  -2.162 0.047151 *  
+(Intercept)                 -7.135709   0.293461 -24.316 1.83e-13 ***
+IBI_CategoryQ2               0.387060   0.182026   2.126 0.050480 .  
+IBI_CategoryQ3               0.663576   0.187133   3.546 0.002933 ** 
+IBI_CategoryQ4               0.847432   0.188383   4.498 0.000425 ***
+Age                          0.075272   0.003967  18.974 6.76e-12 ***
+GenderFemale                -0.493452   0.113951  -4.330 0.000594 ***
+EthnicityHispanic           -0.595320   0.174720  -3.407 0.003899 ** 
+EthnicityNon-Hispanic Black  0.150119   0.126935   1.183 0.255356    
+EthnicityOther Muti-Racial   0.170755   0.248996   0.686 0.503317    
+EducationBelow High School   0.994116   0.228841   4.344 0.000578 ***
+EducationHigh School         0.493891   0.170876   2.890 0.011212 *  
 ---
 Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
-(Dispersion parameter for quasibinomial family taken to be 0.8787986)
+(Dispersion parameter for binomial family taken to be 0.8561514)
 
 Number of Fisher Scoring iterations: 6
 
@@ -173,13 +196,15 @@ Number of Fisher Scoring iterations: 6
 > model3 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education +
 +                    Smoking_status + Alcohol + BMI + Diabetes +
 +                    TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
-+                  design = train_design, family = quasibinomial("logit"))
++                  design = train_design, family = binomial("logit"))
+Warning message:
+In eval(family$initialize) : non-integer #successes in a binomial glm!
 > print(summary(model3))
 
 Call:
 svyglm(formula = CVD ~ IBI_Category + Age + Gender + Ethnicity + 
     Education + Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
-    HDL_CHOLESTEROL + Hypertension, design = train_design, family = quasibinomial("logit"))
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = binomial("logit"))
 
 Survey design:
 svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
@@ -187,34 +212,86 @@ svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
 
 Coefficients:
                               Estimate Std. Error t value Pr(>|t|)    
-(Intercept)                  -5.769903   0.693627  -8.318  0.00041 ***
-IBI_CategoryQ2                0.366133   0.195875   1.869  0.12054    
-IBI_CategoryQ3                0.579009   0.180980   3.199  0.02401 *  
-IBI_CategoryQ4                0.485103   0.198858   2.439  0.05869 .  
-Age                           0.070033   0.004815  14.544 2.77e-05 ***
-GenderFemale                 -0.085284   0.132625  -0.643  0.54852    
-EthnicityNon-Hispanic Black   0.681859   0.186010   3.666  0.01451 *  
-EthnicityNon-Hispanic White   0.702231   0.199304   3.523  0.01686 *  
-EthnicityOther Muti-Racial    0.520814   0.283623   1.836  0.12575    
-EducationAbove High School   -0.670462   0.232626  -2.882  0.03450 *  
-EducationHigh School         -0.390622   0.224009  -1.744  0.14165    
-Smoking_statusCurrent Smoker  0.694327   0.151701   4.577  0.00596 ** 
-Smoking_statusFormer Smoker   0.368932   0.202624   1.821  0.12828    
-AlcoholFrequent Drinker      -0.004705   0.144772  -0.033  0.97533    
-AlcoholOccasional Drinker    -0.063942   0.099208  -0.645  0.54763    
-BMI                           0.017581   0.009533   1.844  0.12446    
-DiabetesYes                   0.670687   0.216354   3.100  0.02685 *  
-DiabetesBorderline           -0.111198   0.373372  -0.298  0.77782    
-TOTAL_CHOLESTEROL            -0.009493   0.001721  -5.515  0.00268 ** 
-HDL_CHOLESTEROL              -0.005734   0.005832  -0.983  0.37065    
-HypertensionYes               0.342737   0.126611   2.707  0.04243 *  
+(Intercept)                  -5.760154   0.512440 -11.241 9.73e-05 ***
+IBI_CategoryQ2                0.411489   0.186062   2.212  0.07795 .  
+IBI_CategoryQ3                0.543978   0.166330   3.270  0.02219 *  
+IBI_CategoryQ4                0.639112   0.195352   3.272  0.02216 *  
+Age                           0.069875   0.004301  16.248 1.61e-05 ***
+GenderFemale                 -0.201157   0.124854  -1.611  0.16807    
+EthnicityHispanic            -0.612506   0.186667  -3.281  0.02192 *  
+EthnicityNon-Hispanic Black  -0.027628   0.141112  -0.196  0.85248    
+EthnicityOther Muti-Racial    0.030552   0.262396   0.116  0.91184    
+EducationBelow High School    0.671820   0.224326   2.995  0.03028 *  
+EducationHigh School          0.277627   0.150269   1.848  0.12394    
+Smoking_statusCurrent Smoker  0.569314   0.153397   3.711  0.01384 *  
+Smoking_statusFormer Smoker   0.320015   0.193136   1.657  0.15843    
+AlcoholFrequent Drinker      -0.075121   0.126088  -0.596  0.57726    
+AlcoholOccasional Drinker    -0.091408   0.094863  -0.964  0.37951    
+BMI                           0.016196   0.007353   2.203  0.07881 .  
+DiabetesYes                   0.769041   0.149982   5.128  0.00368 ** 
+DiabetesBorderline            0.083039   0.295404   0.281  0.78989    
+TOTAL_CHOLESTEROL            -0.009033   0.001579  -5.721  0.00228 ** 
+HDL_CHOLESTEROL              -0.004495   0.005056  -0.889  0.41471    
+HypertensionYes               0.335455   0.127043   2.640  0.04595 *  
 ---
 Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
-(Dispersion parameter for quasibinomial family taken to be 0.8720977)
+(Dispersion parameter for binomial family taken to be 0.8631825)
 
 Number of Fisher Scoring iterations: 6
 
+> 
+> 
+> 
+> cat("\n[FIT] Model 3: Fully adjusted\n")
+
+[FIT] Model 3: Fully adjusted
+> model3_Q_Num <- svyglm(CVD ~ IBI_QuartileNum + Age + Gender + Ethnicity + Education +
++                    Smoking_status + Alcohol + BMI + Diabetes +
++                    TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
++                  design = train_design, family = binomial("logit"))
+Warning message:
+In eval(family$initialize) : non-integer #successes in a binomial glm!
+> print(summary(model3_Q_Num))
+
+Call:
+svyglm(formula = CVD ~ IBI_QuartileNum + Age + Gender + Ethnicity + 
+    Education + Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = binomial("logit"))
+
+Survey design:
+svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
+    nest = TRUE, survey.lonely.psu = "adjust", data = train_df)
+
+Coefficients:
+                              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                  -5.807182   0.530230 -10.952 1.17e-05 ***
+IBI_QuartileNum               0.186097   0.058050   3.206 0.014944 *  
+Age                           0.070196   0.004222  16.626 6.96e-07 ***
+GenderFemale                 -0.200669   0.122843  -1.634 0.146374    
+EthnicityHispanic            -0.610009   0.182588  -3.341 0.012404 *  
+EthnicityNon-Hispanic Black  -0.031117   0.141047  -0.221 0.831690    
+EthnicityOther Muti-Racial    0.025240   0.263828   0.096 0.926466    
+EducationBelow High School    0.662792   0.227256   2.917 0.022452 *  
+EducationHigh School          0.281409   0.151510   1.857 0.105620    
+Smoking_statusCurrent Smoker  0.560769   0.153387   3.656 0.008114 ** 
+Smoking_statusFormer Smoker   0.314616   0.192965   1.630 0.147033    
+AlcoholFrequent Drinker      -0.078065   0.127674  -0.611 0.560235    
+AlcoholOccasional Drinker    -0.090718   0.098203  -0.924 0.386338    
+BMI                           0.015638   0.007235   2.161 0.067460 .  
+DiabetesYes                   0.761064   0.144030   5.284 0.001143 ** 
+DiabetesBorderline            0.084976   0.295674   0.287 0.782130    
+TOTAL_CHOLESTEROL            -0.008954   0.001571  -5.699 0.000736 ***
+HDL_CHOLESTEROL              -0.004895   0.005142  -0.952 0.372818    
+HypertensionYes               0.338672   0.126454   2.678 0.031621 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 0.8625957)
+
+Number of Fisher Scoring iterations: 6
+
+> 
 > 
 > 
 > # ===============================
@@ -229,12 +306,12 @@ Number of Fisher Scoring iterations: 6
 
 [INFO] Example predictions (first 5 rows):
 > print(head(test_df[, c("CVD","pred1","pred2","pred3")], 5))
-  CVD     pred1       pred2       pred3
-1  No 0.1304413 0.182977276 0.123546247
-2  No 0.1147949 0.023185968 0.026429650
-3  No 0.0520034 0.008685377 0.007501022
-4  No 0.1147949 0.141511770 0.160804793
-5  No 0.1304413 0.029428155 0.035979065
+  CVD      pred1       pred2       pred3
+1  No 0.12411038 0.181805429 0.117152055
+2  No 0.13211085 0.027353484 0.034445860
+3  No 0.05065512 0.009213036 0.007805833
+4  No 0.13211085 0.159330996 0.172539861
+5  No 0.13211085 0.229421498 0.249264578
 > 
 > # Get Weighted Mean
 > cat("\n[TEST prevalence]\n")
@@ -242,16 +319,17 @@ Number of Fisher Scoring iterations: 6
 [TEST prevalence]
 > prev <- with(test_df, stats::weighted.mean(CVD_num, WTMEC2YR, na.rm = TRUE))
 > cat(" - Weighted prevalence of CVD (Yes):", round(prev, 3), "\n")
- - Weighted prevalence of CVD (Yes): 0.082 
+ - Weighted prevalence of CVD (Yes): 0.087 
 > 
-> # Weighted baseline accuracy, i.e. majority class
+> 
+> # Weighted baseline accuracy, i.e. majority class % of total
 > baseline_w_acc <- max(prev, 1 - prev)
 > cat(" - Weighted baseline accuracy (majority class):", round(baseline_w_acc, 3), "\n")
- - Weighted baseline accuracy (majority class): 0.918 
+ - Weighted baseline accuracy (majority class): 0.913 
 > 
 > 
 > 
-> # Function to get Weighted metrics at a given threshold
+> # Function to get performance metrics at a given threshold
 >   # Takes in predictions, target, weights, threshold
 > weighted_metrics <- function(pred, y, w, thr) {
 +   pred_cls <- ifelse(pred >= thr, 1L, 0L)
@@ -277,15 +355,15 @@ Number of Fisher Scoring iterations: 6
 +                NA_real_, (5 * ppv * sens) / (4 * ppv + sens))
 +   
 +   tibble::tibble(
-+     Threshold            = thr,
-+     Weighted_Accuracy    = round(acc, 3),
-+     Weighted_Recall      = round(sens, 3),
++     Threshold = thr,
++     Weighted_Accuracy  = round(acc, 3),
++     Weighted_Recall = round(sens, 3),
 +     Weighted_Specificity = round(spec, 3),
-+     Weighted_Precision   = round(ppv, 3),
-+     Weighted_NPV         = round(npv, 3),
-+     LR_Positive          = round(lr_pos_raw, 3),
-+     LR_Negative          = round(lr_neg_raw, 3),
-+     Weighted_F2          = round(f2, 3)
++     Weighted_Precision = round(ppv, 3),
++     Weighted_NPV  = round(npv, 3),
++     LR_Positive  = round(lr_pos_raw, 3),
++     LR_Negative = round(lr_neg_raw, 3),
++     Weighted_F2 = round(f2, 3)
 +   )
 + }
 > 
@@ -301,13 +379,13 @@ Number of Fisher Scoring iterations: 6
 # A tibble: 3 × 9
   Threshold Weighted_Accuracy Weighted_Recall Weighted_Specificity Weighted_Precision Weighted_NPV LR_Positive LR_Negative
       <dbl>             <dbl>           <dbl>                <dbl>              <dbl>        <dbl>       <dbl>       <dbl>
-1       0.5             0.918           0                    1                 NA            0.918       NA          1    
-2       0.5             0.916           0.033                0.995              0.373        0.92         6.67       0.971
-3       0.5             0.92            0.105                0.992              0.553        0.925       13.9        0.902
+1       0.5             0.913           0                    1                 NA            0.913       NA          1    
+2       0.5             0.913           0.051                0.994              0.466        0.917        9.20       0.955
+3       0.5             0.915           0.134                0.99               0.553        0.923       13.0        0.875
 # ℹ 1 more variable: Weighted_F2 <dbl>
 > 
 > # ===============================
-> # 7) ROC/AUC/Metrics (Test data) – weighted
+> # 7) ROC/AUC/Metrics (Test data)
 > # ===============================
 > roc1_test <- pROC::roc(test_df$CVD, test_df$pred1, levels = c("No","Yes"),
 +                        weights = test_df$WTMEC2YR, quiet = TRUE)
@@ -324,17 +402,17 @@ Number of Fisher Scoring iterations: 6
 
 [AUC on TEST]
 > cat(" - Model 1 (IBI only):      ", round(auc1_test, 3), "\n")
- - Model 1 (IBI only):       0.528 
+ - Model 1 (IBI only):       0.552 
 > cat(" - Model 2 (Demographics):  ", round(auc2_test, 3), "\n")
- - Model 2 (Demographics):   0.775 
+ - Model 2 (Demographics):   0.785 
 > cat(" - Model 3 (Full):          ", round(auc3_test, 3), "\n")
- - Model 3 (Full):           0.817 
+ - Model 3 (Full):           0.825 
 > 
 > 
-> # ===============================
-> # 7b) Youden thresholds on TEST (weighted)
-> # ===============================
 > 
+> # 7b) Youden thresholds 
+> 
+> # function to find youden info
 > youden_info <- function(roc_obj) {
 +   # Returns threshold, sensitivity, specificity, and J = sens + spec - 1
 +   cs <- pROC::coords(
@@ -348,10 +426,10 @@ Number of Fisher Scoring iterations: 6
 +   sens <- as.numeric(cs[1, "sensitivity"])
 +   spec <- as.numeric(cs[1, "specificity"])
 +   data.frame(
-+     Threshold   = thr,
++     Threshold = thr,
 +     Sensitivity = sens,
 +     Specificity = spec,
-+     J           = sens + spec - 1
++     J = sens + spec - 1
 +   )
 + }
 > 
@@ -370,11 +448,11 @@ Number of Fisher Scoring iterations: 6
 
 [YOUDEN THRESHOLDS on TEST]
     Model Threshold Sensitivity Specificity      J
-1 Model 1    0.0684      0.8243      0.2519 0.0761
-2 Model 2    0.0637      0.9251      0.4876 0.4127
-3 Model 3    0.1327      0.7545      0.7382 0.4927
+1 Model 1    0.0706      0.8282      0.2538 0.0820
+2 Model 2    0.1237      0.7702      0.6621 0.4323
+3 Model 3    0.1448      0.7619      0.7553 0.5172
 > 
-> # Evaluate weighted metrics at each model's Youden cutoff
+> # Evaluate weighted metrics at each model's Youden threshold
 > metrics1_youden <- with(test_df, weighted_metrics(pred1, CVD_num, WTMEC2YR, thr = youden1$Threshold))
 > metrics2_youden <- with(test_df, weighted_metrics(pred2, CVD_num, WTMEC2YR, thr = youden2$Threshold))
 > metrics3_youden <- with(test_df, weighted_metrics(pred3, CVD_num, WTMEC2YR, thr = youden3$Threshold))
@@ -391,20 +469,15 @@ Number of Fisher Scoring iterations: 6
 # A tibble: 3 × 10
   Model   Threshold Weighted_Accuracy Weighted_Recall Weighted_Specificity Weighted_Precision Weighted_NPV LR_Positive LR_Negative
   <chr>       <dbl>             <dbl>           <dbl>                <dbl>              <dbl>        <dbl>       <dbl>       <dbl>
-1 Model 1    0.0684             0.312           0.821                0.267              0.091        0.943        1.12       0.673
-2 Model 2    0.0637             0.62            0.891                0.596              0.165        0.984        2.20       0.183
-3 Model 3    0.133              0.798           0.705                0.807              0.246        0.968        3.65       0.366
+1 Model 1    0.0706             0.321           0.824                0.273              0.097        0.942        1.13       0.644
+2 Model 2    0.124              0.755           0.737                0.757              0.223        0.968        3.03       0.348
+3 Model 3    0.145              0.815           0.722                0.824              0.28         0.969        4.10       0.338
 # ℹ 1 more variable: Weighted_F2 <dbl>
 > 
-> # Save both tables
-> readr::write_csv(youden_tbl, "youden_thresholds_test.csv")
-> readr::write_csv(metrics_youden, "metrics_at_youden_threshold_test.csv")
-> cat("[FILES SAVED] youden_thresholds_test.csv, metrics_at_youden_threshold_test.csv\n")
-[FILES SAVED] youden_thresholds_test.csv, metrics_at_youden_threshold_test.csv
 > 
-> # ===============================
-> # 7c) Model 3 cutoff calibration: Youden, Rule-in, Rule-out, Closest.topleft
-> # ===============================
+> 
+> 
+> # 7c) Model 3 cutoff calibration: Youden, Rule-in, Rule-out, Closest topleft
 > 
 > # Helper - ROC coords
 > roc_all <- pROC::coords(
@@ -419,7 +492,8 @@ Number of Fisher Scoring iterations: 6
 +   dist_topleft = sqrt((1 - sensitivity)^2 + (1 - specificity)^2) # distance to (0,1)
 + )
 > 
-> # Get a row for each index 
+> # Get a row for each different index 
+> 
 > # 1) Youden J (maximize J)
 > youden_row <- roc_all[which.max(roc_all$J), , drop = FALSE]
 > 
@@ -432,7 +506,7 @@ Number of Fisher Scoring iterations: 6
 +   roc_all[which.max(roc_all$specificity), , drop = FALSE]
 + }
 > 
-> # 3) Rule-out,  choose the with max specificity with sensitivity >= 0.95
+> # 3) Rule-out, choose the with max specificity with sensitivity >= 0.95
 > ruleout_pool <- dplyr::filter(roc_all, sensitivity >= 0.95)
 > ruleout_row <- if (nrow(ruleout_pool)) {
 +   ruleout_pool[which.max(ruleout_pool$specificity), , drop = FALSE]
@@ -464,10 +538,10 @@ Number of Fisher Scoring iterations: 6
 
 [MODEL 3: Candidate thresholds]
                  Index Threshold Sensitivity Specificity      J
-1             Youden J    0.1327      0.7545      0.7382 0.4927
-2  Rule-in (Spec≥0.95)    0.3477      0.2842      0.9501 0.2344
-3 Rule-out (Sens≥0.95)    0.0324      0.9509      0.3913 0.3422
-4     Closest to (0,1)    0.1346      0.7519      0.7407 0.4926
+1             Youden J    0.1448      0.7619      0.7553 0.5172
+2  Rule-in (Spec≥0.95)    0.3650      0.3023      0.9502 0.2525
+3 Rule-out (Sens≥0.95)    0.0399      0.9503      0.4402 0.3905
+4     Closest to (0,1)    0.1448      0.7619      0.7553 0.5172
 > 
 > # Evaluate weighted metrics at each threshold
 > m3_metrics_list <- lapply(thr_tbl_m3$Threshold, function(thr) {
@@ -482,17 +556,12 @@ Number of Fisher Scoring iterations: 6
 # A tibble: 4 × 10
   Index   Threshold Weighted_Accuracy Weighted_Recall Weighted_Specificity Weighted_Precision Weighted_NPV LR_Positive LR_Negative
   <chr>       <dbl>             <dbl>           <dbl>                <dbl>              <dbl>        <dbl>       <dbl>       <dbl>
-1 Youden…    0.133              0.798           0.705                0.807              0.246        0.968        3.65       0.366
-2 Rule-i…    0.348              0.907           0.261                0.965              0.4          0.936        7.45       0.766
-3 Rule-o…    0.0324             0.523           0.93                 0.487              0.139        0.987        1.81       0.144
-4 Closes…    0.135              0.8             0.7                  0.809              0.247        0.968        3.67       0.371
+1 Youden…    0.145              0.815           0.722                0.824              0.28         0.969        4.10       0.338
+2 Rule-i…    0.365              0.908           0.28                 0.968              0.454        0.934        8.74       0.744
+3 Rule-o…    0.0399             0.579           0.934                0.545              0.163        0.989        2.06       0.121
+4 Closes…    0.145              0.815           0.722                0.824              0.28         0.969        4.10       0.338
 # ℹ 1 more variable: Weighted_F2 <dbl>
 > 
-> # Save
-> readr::write_csv(thr_tbl_m3, "model3_thresholds_calibration.csv")
-> readr::write_csv(metrics_m3_cal, "model3_metrics_at_calibrated_thresholds.csv")
-> cat("[FILES SAVED] model3_thresholds_calibration.csv, model3_metrics_at_calibrated_thresholds.csv\n")
-[FILES SAVED] model3_thresholds_calibration.csv, model3_metrics_at_calibrated_thresholds.csv
 > 
 > 
 > # Single view for thresholds + full metrics for Model 3
@@ -513,19 +582,15 @@ Number of Fisher Scoring iterations: 6
 
 [MODEL 3: Calibrated thresholds + full metrics]
                  Index Cutoff Weighted_Accuracy Weighted_Recall Weighted_Specificity Weighted_Precision Weighted_NPV LR_Positive
-1             Youden J  0.133             0.798           0.705                0.807              0.246        0.968       3.648
-2  Rule-in (Spec≥0.95)  0.348             0.907           0.261                0.965              0.400        0.936       7.452
-3 Rule-out (Sens≥0.95)  0.032             0.523           0.930                0.487              0.139        0.987       1.812
-4     Closest to (0,1)  0.135             0.800           0.700                0.809              0.247        0.968       3.669
+1             Youden J  0.145             0.815           0.722                0.824              0.280        0.969       4.098
+2  Rule-in (Spec≥0.95)  0.365             0.908           0.280                0.968              0.454        0.934       8.744
+3 Rule-out (Sens≥0.95)  0.040             0.579           0.934                0.545              0.163        0.989       2.055
+4     Closest to (0,1)  0.145             0.815           0.722                0.824              0.280        0.969       4.098
   LR_Negative Weighted_F2
-1       0.366       0.513
-2       0.766       0.281
-3       0.144       0.436
-4       0.371       0.512
-> readr::write_csv(m3_summary, "model3_calibrated_thresholds_full_metrics.csv")
-> cat("[FILE SAVED] model3_calibrated_thresholds_full_metrics.csv\n")
-[FILE SAVED] model3_calibrated_thresholds_full_metrics.csv
-> 
+1       0.338       0.549
+2       0.744       0.303
+3       0.121       0.480
+4       0.338       0.549
 > 
 > # ===============================
 > # 8) Train-set ROC/AUC (unweighted)
@@ -534,9 +599,14 @@ Number of Fisher Scoring iterations: 6
 > train_df$pred2_tr <- predict(model2, type = "response")
 > train_df$pred3_tr <- predict(model3, type = "response")
 > 
-> roc1_train <- pROC::roc(train_df$CVD, train_df$pred1_tr, levels = c("No","Yes"), quiet = TRUE)
-> roc2_train <- pROC::roc(train_df$CVD, train_df$pred2_tr, levels = c("No","Yes"), quiet = TRUE)
-> roc3_train <- pROC::roc(train_df$CVD, train_df$pred3_tr, levels = c("No","Yes"), quiet = TRUE)
+> 
+> roc1_train <- pROC::roc(train_df$CVD, train_df$pred1_tr, levels = c("No","Yes"),
++                         weights = train_df$WTMEC2YR, quiet = TRUE)
+> roc2_train <- pROC::roc(train_df$CVD, train_df$pred2_tr, levels = c("No","Yes"),
++                         weights = train_df$WTMEC2YR, quiet = TRUE)
+> roc3_train <- pROC::roc(train_df$CVD, train_df$pred3_tr, levels = c("No","Yes"),
++                         weights = train_df$WTMEC2YR, quiet = TRUE)
+> 
 > 
 > results_compare <- data.frame(
 +   Model = c("Model 1","Model 2","Model 3"),
@@ -546,23 +616,29 @@ Number of Fisher Scoring iterations: 6
 > 
 > results_compare_print <- dplyr::mutate(results_compare,
 +                                        dplyr::across(where(is.numeric), ~ round(.x, 3)))
+> 
 > cat("\n[AUC TRAIN vs TEST]\n"); print(results_compare_print)
 
 [AUC TRAIN vs TEST]
     Model Train_AUC Test_AUC
-1 Model 1     0.584    0.528
-2 Model 2     0.801    0.775
-3 Model 3     0.826    0.817
-> readr::write_csv(results_compare_print, "auc_train_vs_test.csv")
-> cat("[FILE SAVED] auc_train_vs_test.csv\n")
-[FILE SAVED] auc_train_vs_test.csv
+1 Model 1     0.592    0.552
+2 Model 2     0.805    0.785
+3 Model 3     0.828    0.825
+> 
 > 
 > # ===============================
 > # 9) Plot Test ROC curves
 > # ===============================
 > # All 3 models 
-> plot(roc1_test, col = "red", main = "Test ROC (2021–2023) — models trained on 2017–2020",
-+      xlab = "1 - Specificity", ylab = "Sensitivity", lwd = 2)
+> plot(
++   roc1_test,
++   col = "red",
++   main = "Test ROC (2021–2023) — models trained on 2017–2020",
++   xlab = "1 - Specificity",
++   ylab = "Sensitivity",
++   lwd = 2,
++   legacy.axes = TRUE  # flip x-axis direction to 0 → 1
++ )
 > lines(roc2_test, col = "blue", lwd = 2)
 > lines(roc3_test, col = "green", lwd = 2)
 > legend("bottomright",
@@ -570,24 +646,6 @@ Number of Fisher Scoring iterations: 6
 +                   paste("Model 2:", round(auc2_test, 3)),
 +                   paste("Model 3:", round(auc3_test, 3))),
 +        col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
-> 
-> # Save PNG
-> png("ROC_Curves_TrainToTest.png", width = 800, height = 600)
-> plot(roc1_test, col = "red", main = "Test ROC (2021–2023) — models trained on 2017–2020",
-+      xlab = "1 - Specificity", ylab = "Sensitivity", lwd = 2)
-> lines(roc2_test, col = "blue", lwd = 2)
-> lines(roc3_test, col = "green", lwd = 2)
-> legend("bottomright",
-+        legend = c(paste("Model 1:", round(auc1_test, 3)),
-+                   paste("Model 2:", round(auc2_test, 3)),
-+                   paste("Model 3:", round(auc3_test, 3))),
-+        col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
-> dev.off()
-RStudioGD 
-        2 
-> cat("[FILE SAVED] ROC_Curves_TrainToTest.png\n")
-[FILE SAVED] ROC_Curves_TrainToTest.png
-> 
 > 
 > 
 > # Weighted precision–recall curve for Model 3
@@ -599,11 +657,11 @@ RStudioGD
 +   curve = FALSE # took up too much memory
 + )$auc.integral
 > cat("Weighted PR-AUC (Model 3):", round(wpr_auc, 3), "\n")
-Weighted PR-AUC (Model 3): 0.824 
+Weighted PR-AUC (Model 3): 0.811 
 > 
 > 
 > # ===============================
-> # 10) Continuous IBI and model with splines
+> # 10) Continuous IBI and model with spline
 > # ===============================
 > 
 > # Continuous IBI
@@ -611,12 +669,130 @@ Weighted PR-AUC (Model 3): 0.824
 +                         Smoking_status + Alcohol + BMI + Diabetes +
 +                         TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
 +                       design = train_design, family = quasibinomial("logit"))
-> 
+> print(summary(model3_cont))
+
+Call:
+svyglm(formula = CVD ~ IBI + Age + Gender + Ethnicity + Education + 
+    Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = quasibinomial("logit"))
+
+Survey design:
+svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
+    nest = TRUE, survey.lonely.psu = "adjust", data = train_df)
+
+Coefficients:
+                              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                  -5.674095   0.510110 -11.123 1.06e-05 ***
+IBI                           0.001427   0.001523   0.937 0.379919    
+Age                           0.071162   0.004221  16.861 6.32e-07 ***
+GenderFemale                 -0.170570   0.122987  -1.387 0.208031    
+EthnicityHispanic            -0.612287   0.184858  -3.312 0.012903 *  
+EthnicityNon-Hispanic Black  -0.054277   0.137575  -0.395 0.704937    
+EthnicityOther Muti-Racial   -0.006271   0.269890  -0.023 0.982112    
+EducationBelow High School    0.665081   0.228369   2.912 0.022586 *  
+EducationHigh School          0.292919   0.151933   1.928 0.095210 .  
+Smoking_statusCurrent Smoker  0.599819   0.159585   3.759 0.007088 ** 
+Smoking_statusFormer Smoker   0.325931   0.194623   1.675 0.137908    
+AlcoholFrequent Drinker      -0.078969   0.129370  -0.610 0.560874    
+AlcoholOccasional Drinker    -0.089733   0.094803  -0.947 0.375404    
+BMI                           0.024151   0.007696   3.138 0.016423 *  
+DiabetesYes                   0.767660   0.139105   5.519 0.000889 ***
+DiabetesBorderline            0.075750   0.290281   0.261 0.801638    
+TOTAL_CHOLESTEROL            -0.008452   0.001517  -5.572 0.000841 ***
+HDL_CHOLESTEROL              -0.006627   0.005176  -1.280 0.241242    
+HypertensionYes               0.342974   0.127497   2.690 0.031084 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.8560169)
+
+Number of Fisher Scoring iterations: 6
+
 > # Splines for IBI
 > model3_spline <- svyglm(CVD ~ ns(IBI, df = 3) + Age + Gender + Ethnicity + Education +
 +                           Smoking_status + Alcohol + BMI + Diabetes +
 +                           TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
 +                         design = train_design, family = quasibinomial("logit"))
+> summary(model3_cont)
+
+Call:
+svyglm(formula = CVD ~ IBI + Age + Gender + Ethnicity + Education + 
+    Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = quasibinomial("logit"))
+
+Survey design:
+svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
+    nest = TRUE, survey.lonely.psu = "adjust", data = train_df)
+
+Coefficients:
+                              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                  -5.674095   0.510110 -11.123 1.06e-05 ***
+IBI                           0.001427   0.001523   0.937 0.379919    
+Age                           0.071162   0.004221  16.861 6.32e-07 ***
+GenderFemale                 -0.170570   0.122987  -1.387 0.208031    
+EthnicityHispanic            -0.612287   0.184858  -3.312 0.012903 *  
+EthnicityNon-Hispanic Black  -0.054277   0.137575  -0.395 0.704937    
+EthnicityOther Muti-Racial   -0.006271   0.269890  -0.023 0.982112    
+EducationBelow High School    0.665081   0.228369   2.912 0.022586 *  
+EducationHigh School          0.292919   0.151933   1.928 0.095210 .  
+Smoking_statusCurrent Smoker  0.599819   0.159585   3.759 0.007088 ** 
+Smoking_statusFormer Smoker   0.325931   0.194623   1.675 0.137908    
+AlcoholFrequent Drinker      -0.078969   0.129370  -0.610 0.560874    
+AlcoholOccasional Drinker    -0.089733   0.094803  -0.947 0.375404    
+BMI                           0.024151   0.007696   3.138 0.016423 *  
+DiabetesYes                   0.767660   0.139105   5.519 0.000889 ***
+DiabetesBorderline            0.075750   0.290281   0.261 0.801638    
+TOTAL_CHOLESTEROL            -0.008452   0.001517  -5.572 0.000841 ***
+HDL_CHOLESTEROL              -0.006627   0.005176  -1.280 0.241242    
+HypertensionYes               0.342974   0.127497   2.690 0.031084 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.8560169)
+
+Number of Fisher Scoring iterations: 6
+
+> summary(model3_spline)
+
+Call:
+svyglm(formula = CVD ~ ns(IBI, df = 3) + Age + Gender + Ethnicity + 
+    Education + Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = quasibinomial("logit"))
+
+Survey design:
+svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
+    nest = TRUE, survey.lonely.psu = "adjust", data = train_df)
+
+Coefficients:
+                              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                  -5.828428   0.528083 -11.037 0.000106 ***
+ns(IBI, df = 3)1              3.641382   2.114212   1.722 0.145623    
+ns(IBI, df = 3)2             -1.192723   2.345518  -0.509 0.632730    
+ns(IBI, df = 3)3             -7.530478   5.743568  -1.311 0.246800    
+Age                           0.070145   0.004174  16.807 1.36e-05 ***
+GenderFemale                 -0.192457   0.120954  -1.591 0.172446    
+EthnicityHispanic            -0.599677   0.180790  -3.317 0.021078 *  
+EthnicityNon-Hispanic Black  -0.021992   0.140061  -0.157 0.881373    
+EthnicityOther Muti-Racial    0.034748   0.266569   0.130 0.901368    
+EducationBelow High School    0.655518   0.226132   2.899 0.033837 *  
+EducationHigh School          0.275259   0.150652   1.827 0.127239    
+Smoking_statusCurrent Smoker  0.571161   0.156389   3.652 0.014715 *  
+Smoking_statusFormer Smoker   0.326808   0.192622   1.697 0.150530    
+AlcoholFrequent Drinker      -0.056316   0.128787  -0.437 0.680150    
+AlcoholOccasional Drinker    -0.084670   0.096224  -0.880 0.419174    
+BMI                           0.015941   0.007440   2.143 0.085019 .  
+DiabetesYes                   0.747460   0.142326   5.252 0.003321 ** 
+DiabetesBorderline            0.090243   0.294548   0.306 0.771666    
+TOTAL_CHOLESTEROL            -0.009044   0.001603  -5.643 0.002424 ** 
+HDL_CHOLESTEROL              -0.004809   0.005065  -0.949 0.386070    
+HypertensionYes               0.332993   0.125316   2.657 0.045034 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.8615713)
+
+Number of Fisher Scoring iterations: 6
+
 > 
 > # Compare TEST AUCs for these
 > test_df$pred3_cont   <- predict(model3_cont,   newdata=test_df, type="response")
@@ -629,18 +805,18 @@ Weighted PR-AUC (Model 3): 0.824
 
 [Model 3 variants — AUC on TEST]
 > cat("  IBI continuous: ", round(pROC::auc(roc3_cont),   3), "\n")
-  IBI continuous:  0.821 
+  IBI continuous:  0.829 
 > cat("  IBI spline:     ", round(pROC::auc(roc3_spline), 3), "\n")
-  IBI spline:      0.818 
+  IBI spline:      0.827 
 > 
 > 
-> # ===============================
-> # 10b) IBI as binary (top quartile vs others), fully adjusted model
-> # ===============================
+> 
+> 
+> # 10b) IBI as binary (top ha;f vs bottom half)
 > 
 > # Create binary on train and test using existing quartiles
-> train_df$IBI_high <- as.integer(train_df$IBI >= ibi_quartiles[4])
-> test_df$IBI_high  <- as.integer(test_df$IBI  >= ibi_quartiles[4])
+> train_df$IBI_high <- as.integer(train_df$IBI >= ibi_quartiles[3])
+> test_df$IBI_high  <- as.integer(test_df$IBI  >= ibi_quartiles[3])
 > 
 > train_design <- svydesign(
 +   id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
@@ -655,9 +831,9 @@ Weighted PR-AUC (Model 3): 0.824
 +     TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
 +   design = train_design, family = quasibinomial("logit")
 + )
-> cat("\n[FIT] Model 3 (IBI binary: Q4 vs others)\n"); print(summary(model3_binary))
+> cat("\n[FIT] Model 3 (IBI binary: Q3-4 vs Q1-2)\n"); print(summary(model3_binary))
 
-[FIT] Model 3 (IBI binary: Q4 vs others)
+[FIT] Model 3 (IBI binary: Q3-4 vs Q1-2)
 
 Call:
 svyglm(formula = CVD ~ IBI_high + Age + Gender + Ethnicity + 
@@ -670,35 +846,35 @@ svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
 
 Coefficients:
                               Estimate Std. Error t value Pr(>|t|)    
-(Intercept)                  -5.674182   0.665940  -8.521 6.08e-05 ***
-IBI_high                      0.071784   0.146403   0.490  0.63890    
-Age                           0.071474   0.004801  14.888 1.48e-06 ***
-GenderFemale                 -0.063251   0.128996  -0.490  0.63889    
-EthnicityNon-Hispanic Black   0.657216   0.184999   3.553  0.00931 ** 
-EthnicityNon-Hispanic White   0.706303   0.195116   3.620  0.00851 ** 
-EthnicityOther Muti-Racial    0.507847   0.288155   1.762  0.12137    
-EducationAbove High School   -0.649854   0.232306  -2.797  0.02662 *  
-EducationHigh School         -0.349143   0.219913  -1.588  0.15639    
-Smoking_statusCurrent Smoker  0.723908   0.155042   4.669  0.00229 ** 
-Smoking_statusFormer Smoker   0.364437   0.205020   1.778  0.11872    
-AlcoholFrequent Drinker      -0.030864   0.148611  -0.208  0.84139    
-AlcoholOccasional Drinker    -0.076227   0.101142  -0.754  0.47563    
-BMI                           0.023422   0.009445   2.480  0.04222 *  
-DiabetesYes                   0.671579   0.206977   3.245  0.01416 *  
-DiabetesBorderline           -0.123558   0.373978  -0.330  0.75078    
-TOTAL_CHOLESTEROL            -0.008964   0.001672  -5.362  0.00105 ** 
-HDL_CHOLESTEROL              -0.007866   0.006076  -1.295  0.23652    
-HypertensionYes               0.348336   0.127306   2.736  0.02908 *  
+(Intercept)                  -5.583721   0.511089 -10.925 1.19e-05 ***
+IBI_high                      0.326048   0.125443   2.599 0.035468 *  
+Age                           0.070433   0.004171  16.885 6.26e-07 ***
+GenderFemale                 -0.191036   0.124362  -1.536 0.168388    
+EthnicityHispanic            -0.603183   0.183690  -3.284 0.013418 *  
+EthnicityNon-Hispanic Black  -0.036920   0.141543  -0.261 0.801725    
+EthnicityOther Muti-Racial    0.008651   0.265289   0.033 0.974897    
+EducationBelow High School    0.664382   0.228242   2.911 0.022633 *  
+EducationHigh School          0.282589   0.150979   1.872 0.103417    
+Smoking_statusCurrent Smoker  0.569021   0.151497   3.756 0.007112 ** 
+Smoking_statusFormer Smoker   0.316759   0.192021   1.650 0.143010    
+AlcoholFrequent Drinker      -0.072536   0.126311  -0.574 0.583762    
+AlcoholOccasional Drinker    -0.084457   0.098218  -0.860 0.418320    
+BMI                           0.017781   0.007337   2.424 0.045853 *  
+DiabetesYes                   0.763607   0.140933   5.418 0.000989 ***
+DiabetesBorderline            0.099983   0.297680   0.336 0.746809    
+TOTAL_CHOLESTEROL            -0.008830   0.001538  -5.741 0.000705 ***
+HDL_CHOLESTEROL              -0.005385   0.005023  -1.072 0.319292    
+HypertensionYes               0.340528   0.126882   2.684 0.031365 *  
 ---
 Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
-(Dispersion parameter for quasibinomial family taken to be 0.8726688)
+(Dispersion parameter for quasibinomial family taken to be 0.8527679)
 
 Number of Fisher Scoring iterations: 6
 
 > 
 > 
-> # Predict on TRAIN data
+> # Predict on train data
 > train_df$pred3_binary <- predict(model3_binary, type = "response")
 > 
 > roc3_binary_train <- pROC::roc(
@@ -723,13 +899,13 @@ Number of Fisher Scoring iterations: 6
 
 [Model 3 (binary IBI) — AUC on TEST]
 > cat("  IBI binary (Q4 vs others): ", round(auc3_binary, 3), "\n")
-  IBI binary (Q4 vs others):  0.821 
+  IBI binary (Q4 vs others):  0.827 
 > 
 > 
 > # Compare continuous, spline, and binary models
 > results_compare2 <- results_compare |>
 +   dplyr::bind_rows(tibble::tibble(
-+     Model     = "Model 3 (IBI binary)",
++     Model = "Model 3 (IBI binary)",
 +     Train_AUC = as.numeric(auc3_binary_train),
 +     Test_AUC  = as.numeric(auc3_binary)
 +   ))
@@ -742,100 +918,84 @@ Number of Fisher Scoring iterations: 6
 
 [AUC TRAIN vs TEST] (updated with binary IBI)
                  Model Train_AUC Test_AUC
-1              Model 1     0.584    0.528
-2              Model 2     0.801    0.775
-3              Model 3     0.826    0.817
-4 Model 3 (IBI binary)     0.823    0.821
-> readr::write_csv(results_compare_print, "auc_train_vs_test.csv")
+1              Model 1     0.592    0.552
+2              Model 2     0.805    0.785
+3              Model 3     0.828    0.825
+4 Model 3 (IBI binary)     0.827    0.827
 > 
 > # ===============================
 > # 11)  Dose–response for IBI
 > # ===============================
 > 
-> 
-> lo <- as.numeric(quantile(train_df$IBI, 0.01, na.rm = TRUE))
-> hi <- as.numeric(quantile(train_df$IBI, 0.99, na.rm = TRUE))
-> step <- (hi - lo) / 200  # ~200 points
-> 
-> gg_ibi <- ggpredict(
-+   model3_cont,
-+   terms = sprintf("IBI [%.6f:%.6f by=%.6f]", lo, hi, step)
+> # Use the trend model (numeric quartile score) to get fitted probabilities
+> gg_ibi_quart <- ggpredict(
++   model3_Q_Num,
++   terms = "IBI_QuartileNum [1:4]"   # predicts for quartiles 1, 2, 3, 4
 + )
+> summary(model3)
+
+Call:
+svyglm(formula = CVD ~ IBI_Category + Age + Gender + Ethnicity + 
+    Education + Smoking_status + Alcohol + BMI + Diabetes + TOTAL_CHOLESTEROL + 
+    HDL_CHOLESTEROL + Hypertension, design = train_design, family = binomial("logit"))
+
+Survey design:
+svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, 
+    nest = TRUE, survey.lonely.psu = "adjust", data = train_df)
+
+Coefficients:
+                              Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                  -5.760154   0.512440 -11.241 9.73e-05 ***
+IBI_CategoryQ2                0.411489   0.186062   2.212  0.07795 .  
+IBI_CategoryQ3                0.543978   0.166330   3.270  0.02219 *  
+IBI_CategoryQ4                0.639112   0.195352   3.272  0.02216 *  
+Age                           0.069875   0.004301  16.248 1.61e-05 ***
+GenderFemale                 -0.201157   0.124854  -1.611  0.16807    
+EthnicityHispanic            -0.612506   0.186667  -3.281  0.02192 *  
+EthnicityNon-Hispanic Black  -0.027628   0.141112  -0.196  0.85248    
+EthnicityOther Muti-Racial    0.030552   0.262396   0.116  0.91184    
+EducationBelow High School    0.671820   0.224326   2.995  0.03028 *  
+EducationHigh School          0.277627   0.150269   1.848  0.12394    
+Smoking_statusCurrent Smoker  0.569314   0.153397   3.711  0.01384 *  
+Smoking_statusFormer Smoker   0.320015   0.193136   1.657  0.15843    
+AlcoholFrequent Drinker      -0.075121   0.126088  -0.596  0.57726    
+AlcoholOccasional Drinker    -0.091408   0.094863  -0.964  0.37951    
+BMI                           0.016196   0.007353   2.203  0.07881 .  
+DiabetesYes                   0.769041   0.149982   5.128  0.00368 ** 
+DiabetesBorderline            0.083039   0.295404   0.281  0.78989    
+TOTAL_CHOLESTEROL            -0.009033   0.001579  -5.721  0.00228 ** 
+HDL_CHOLESTEROL              -0.004495   0.005056  -0.889  0.41471    
+HypertensionYes               0.335455   0.127043   2.640  0.04595 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 0.8631825)
+
+Number of Fisher Scoring iterations: 6
+
 > 
-> plot(gg_ibi) +
+> # Optional: relabel quartiles nicely for the plot
+> gg_ibi_quart$x <- factor(gg_ibi_quart$x, labels = c("Q1", "Q2", "Q3", "Q4"))
+> 
+> # Build the ggplot object
+> p_ibi_quart <- plot(gg_ibi_quart) +
 +   theme_minimal() +
 +   labs(
-+     title = "Continuous IBI dose–response (trimmed to 1st–99th pct)",
-+     x = "IBI",
++     title = "Predicted Probability of CVD by IBI Quartile",
++     x = "IBI Quartile",
 +     y = "Predicted Probability of CVD"
++   ) +
++   geom_point(size = 3) +
++   geom_line(group = 1, linewidth = 1) +
++   ylim(0, NA) +
++   theme(
++     plot.title = element_text(face = "bold"),
++     axis.title = element_text(size = 12),
++     axis.text = element_text(size = 11)
 +   )
+Scale for y is already present.
+Adding another scale for y, which will replace the existing scale.
 > 
-> 
-> # ===============================
-> # 12) Save models & other objects
-> # ===============================
-> saveRDS(model1, "model1_ibi_only_trainP.rds")
-> saveRDS(model2, "model2_demographic_adjusted_trainP.rds")
-> saveRDS(model3, "model3_fully_adjusted_trainP.rds")
-> saveRDS(roc1_test, "roc_model1_testL.rds")
-> saveRDS(roc2_test, "roc_model2_testL.rds")
-> saveRDS(roc3_test, "roc_model3_testL.rds")
-> saveRDS(ibi_quartiles, "ibi_quartiles_trainP.rds")
-> saveRDS(model3_cont,   "model3_cont_trainP.rds")
-> saveRDS(model3_spline, "model3_spline_trainP.rds")
-> saveRDS(model3_binary, "model3_binary_trainP.rds")
-> saveRDS(roc3_cont,     "roc_model3_cont_testL.rds")
-> saveRDS(roc3_spline,   "roc_model3_spline_testL.rds")
-> saveRDS(roc3_binary,   "roc_model3_binary_testL.rds")
-> saveRDS(roc3_binary_train, "roc_model3_binary_trainP.rds")
-> readr::write_csv(
-+   dplyr::transmute(test_df, SEQN, CVD, CVD_num, pred1, pred2, pred3, WTMEC2YR),
-+   "test_predictions_L.csv"
-+ )
-> 
-> cat("\n[FILES SAVED]\n",
-+     "- model1_ibi_only_trainP.rds\n",
-+     "- model2_demographic_adjusted_trainP.rds\n",
-+     "- model3_fully_adjusted_trainP.rds\n",
-+     "- roc_model1_testL.rds\n",
-+     "- roc_model2_testL.rds\n",
-+     "- roc_model3_testL.rds\n",
-+     "- ibi_quartiles_trainP.rds\n",
-+     "- test_predictions_L.csv\n",
-+     "- model3_cont_trainP.rds\n",
-+     "- model3_spline_trainP.rds\n",
-+     "- model3_binary_trainP.rds\n",
-+     "- roc_model3_cont_testL.rds\n",
-+     "- roc_model3_spline_testL.rds\n",
-+     "- roc_model3_binary_testL.rds\n",
-+     "- roc_model3_binary_trainP.rds"
-+     )
-
-[FILES SAVED]
- - model1_ibi_only_trainP.rds
- - model2_demographic_adjusted_trainP.rds
- - model3_fully_adjusted_trainP.rds
- - roc_model1_testL.rds
- - roc_model2_testL.rds
- - roc_model3_testL.rds
- - ibi_quartiles_trainP.rds
- - test_predictions_L.csv
- - model3_cont_trainP.rds
- - model3_spline_trainP.rds
- - model3_binary_trainP.rds
- - roc_model3_cont_testL.rds
- - roc_model3_spline_testL.rds
- - roc_model3_binary_testL.rds
- - roc_model3_binary_trainP.rds> 
-> 
-> 
-> writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
-> cat("[FILE SAVED] sessionInfo.txt\n")
-[FILE SAVED] sessionInfo.txt
-> 
-> utils::savehistory("Rhistory_this_run.Rhistory")
-> 
-> 
-> # End logging 
-> sink()
+> # Display
+> print(p_ibi_quart)
 > 
