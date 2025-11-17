@@ -1,4 +1,4 @@
-
+setwd('C:/Users/danie/repos/595 Research/Code')
 
 # ===============================
 # 1) Libraries
@@ -10,49 +10,25 @@ library(dplyr)
 library(caret)
 library(splines)
 library(ggeffects)
-
+library(sjPlot)
 
 # ===============================
 # 2) Load data
 # ===============================
-data.complete <- readRDS("data_complete_cleaned.rds")
+data.complete <- readRDS("data_complete.rds")
 # str(data.complete)
 # head(data.complete)
-
 cat("\n[INFO] Data loaded:\n")
 cat(" - Rows:", nrow(data.complete), "  Cols:", ncol(data.complete), "\n")
-cat(" - Cycle L Rows: ", sum(data.complete$Cycle == "L"))
 cat(" - Cycle P Rows: ", sum(data.complete$Cycle == "P"))
+cat(" - Cycle L Rows: ", sum(data.complete$Cycle == "L"))
+
 
 # ===============================
 # 3) Split by cycle & build IBI quartiles on TRAIN
 # ===============================
 train_df <- subset(data.complete, Cycle == "P")  # 2017–2020
 test_df  <- subset(data.complete, Cycle == "L")  # 2021–2023
-
-
-
-# Quartiles on  IBI
-ibi_quartiles <- quantile(train_df$IBI, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
-
-# function to cut into quartiles
-cut_ibi <- function(x, breaks) {
-  cut(x, breaks = breaks, labels = c("Q1","Q2","Q3","Q4"),
-      include.lowest = TRUE, right = TRUE, ordered_result = TRUE)
-}
-
-train_df$IBI_Category <- cut_ibi(train_df$IBI, ibi_quartiles)
-test_df$IBI_Category  <- cut_ibi(test_df$IBI,  ibi_quartiles)
-
-# factor and revel quartiles
-train_df$IBI_Category <- factor(as.character(train_df$IBI_Category),
-                                levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
-train_df$IBI_Category <- relevel(train_df$IBI_Category, ref = "Q1")
-
-
-test_df$IBI_Category <- factor(as.character(test_df$IBI_Category),
-                               levels = c("Q1","Q2","Q3","Q4"), ordered = FALSE)
-test_df$IBI_Category <- relevel(test_df$IBI_Category, ref = "Q1")
 
 
 # Quartiles as Numeric 1-4 
@@ -70,7 +46,7 @@ test_df$CVD_num  <- as.integer(test_df$CVD  == "Yes")
 cat("\n[SECTION 3 SUMMARY]\n")
 cat(" - Train rows (Cycle P):", nrow(train_df), "\n")
 cat(" - Test  rows (Cycle L):", nrow(test_df),  "\n")
-cat(" - Quartile cutpoints (IBI, raw on TRAIN):\n"); print(ibi_quartiles)
+cat(" - Quartile cutpoints:\n"); print(ibi_quartiles)
 
 
 # ===============================
@@ -92,11 +68,15 @@ train_design <- svydesign(
 cat("\n[FIT] Model 1: IBI only\n")
 model1 <- svyglm(CVD ~ IBI_Category, design = train_design, family = binomial("logit"))
 print(summary(model1))
+df_or1 <- sjPlot::get_model_data(model1, type = "est", transform = "exp")
+print(df_or1)
 
 cat("\n[FIT] Model 2: + Demographics\n")
 model2 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education,
                  design = train_design, family = binomial("logit"))
 print(summary(model2))
+df_or2 <- sjPlot::get_model_data(model2, type = "est", transform = "exp")
+print(df_or2)
 
 cat("\n[FIT] Model 3: Fully adjusted\n")
 model3 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education +
@@ -104,16 +84,18 @@ model3 <- svyglm(CVD ~ IBI_Category + Age + Gender + Ethnicity + Education +
                    TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
                  design = train_design, family = binomial("logit"))
 print(summary(model3))
+df_or3 <- sjPlot::get_model_data(model3, type = "est", transform = "exp")
+print(df_or3)
 
 
-
-cat("\n[FIT] Model 3: Fully adjusted\n")
+cat("\n[FIT] Model 3 linear: Fully adjusted\n")
 model3_Q_Num <- svyglm(CVD ~ IBI_QuartileNum + Age + Gender + Ethnicity + Education +
                    Smoking_status + Alcohol + BMI + Diabetes +
                    TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
                  design = train_design, family = binomial("logit"))
 print(summary(model3_Q_Num))
-
+df_or_num <- sjPlot::get_model_data(model3_Q_Num, type = "est", transform = "exp")
+print(df_or_num)
 
 
 # ===============================
@@ -376,22 +358,53 @@ cat("\n[AUC TRAIN vs TEST]\n"); print(results_compare_print)
 # 9) Plot Test ROC curves
 # ===============================
 # All 3 models 
-plot(
+auc1 <- round(auc(roc1_test), 3)
+auc2 <- round(auc(roc2_test), 3)
+auc3 <- round(auc(roc3_test), 3)
+
+roc_list <- list(
   roc1_test,
-  col = "red",
-  main = "Test ROC (2021–2023) — models trained on 2017–2020",
-  xlab = "1 - Specificity",
-  ylab = "Sensitivity",
-  lwd = 2,
-  legacy.axes = TRUE  # flip x-axis direction to 0 → 1
+  roc2_test,
+  roc3_test
 )
-lines(roc2_test, col = "blue", lwd = 2)
-lines(roc3_test, col = "green", lwd = 2)
-legend("bottomright",
-       legend = c(paste("Model 1:", round(auc1_test, 3)),
-                  paste("Model 2:", round(auc2_test, 3)),
-                  paste("Model 3:", round(auc3_test, 3))),
-       col = c("red","blue","green"), lty = 1, lwd = 2, cex = 0.85)
+
+names(roc_list) <- c(
+  paste0("Model 1 (IBI only), AUC =", auc1),
+  paste0("Model 2 (+ demographics), AUC =", auc2),
+  paste0("Model 3 (fully adjusted), AUC =", auc3)
+)
+
+# Black/white ROC plot
+p_roc_bw <- ggroc(roc_list, legacy.axes = TRUE) +
+  theme_classic(base_size = 12) +
+  
+  ## Black & white styling
+  scale_color_grey(start = 0.1, end = 0.6) +  # grayscale
+  scale_linetype_manual(values = c("solid", "dashed", "dotted")) +
+  
+  ## Labels & theme
+  labs(
+    title = "Model ROC Curves",
+    x = "1 − Specificity",
+    y = "Sensitivity",
+    color = "Model",
+    linetype = "Model"
+  ) +
+  theme(
+    plot.title      = element_text(face = "bold", hjust = 0.5),
+    legend.position = "top",
+    legend.title    = element_text(face = "bold"),
+    legend.text     = element_text(size = 9),
+    axis.title      = element_text(size = 11),
+    axis.text       = element_text(size = 10)
+  )
+
+p_roc_bw
+
+png("roc_test_2017_2023.png", width = 6, height = 5, units = "in", res = 600)
+print(p_roc_bw)   # or p_roc_bw
+dev.off()
+
 
 
 # Weighted precision–recall curve for Model 3
@@ -440,8 +453,8 @@ cat("  IBI spline:     ", round(pROC::auc(roc3_spline), 3), "\n")
 # 10b) IBI as binary (top ha;f vs bottom half)
 
 # Create binary on train and test using existing quartiles
-train_df$IBI_high <- as.integer(train_df$IBI >= ibi_quartiles[3])
-test_df$IBI_high  <- as.integer(test_df$IBI  >= ibi_quartiles[3])
+train_df$IBI_high <- as.integer(train_df$IBI_QuartileNum >= 3)
+test_df$IBI_high  <- as.integer(test_df$IBI_QuartileNum  >= 3)
 
 train_design <- svydesign(
   id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR,
@@ -531,6 +544,26 @@ p_ibi_quart <- plot(gg_ibi_quart) +
 
 # Display
 print(p_ibi_quart)
+
+
+# get forest plot of log reg mode
+plot_model(
+  model3,
+  transform = "exp",         # convert log-odds → odds ratios
+  value.offset = .3,         # moves numeric labels slightly right
+  vline.color = "grey50",    # OR=1 reference line
+  title = "Survey-weighted logistic regression (Model 3)",
+  order.terms = "desc"
+)
+
+
+
+
+tab_model(
+  model3,
+  transform = "exp",  # exponentiate coefficients → ORs
+  dv.labels = "CVD Risk (Survey-weighted)"
+)
 
 
 
