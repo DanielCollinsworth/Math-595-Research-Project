@@ -46,7 +46,6 @@ test_df$CVD_num  <- as.integer(test_df$CVD  == "Yes")
 cat("\n[SECTION 3 SUMMARY]\n")
 cat(" - Train rows (Cycle P):", nrow(train_df), "\n")
 cat(" - Test  rows (Cycle L):", nrow(test_df),  "\n")
-cat(" - Quartile cutpoints:\n"); print(ibi_quartiles)
 
 
 # ===============================
@@ -384,7 +383,6 @@ p_roc_bw <- ggroc(roc_list, legacy.axes = TRUE) +
   
   ## Labels & theme
   labs(
-    title = "Model ROC Curves",
     x = "1 − Specificity",
     y = "Sensitivity",
     color = "Model",
@@ -542,23 +540,12 @@ p_ibi_quart <- plot(gg_ibi_quart) +
     axis.text = element_text(size = 11)
   )
 
-# Display
-print(p_ibi_quart)
 
 
-# get forest plot of log reg mode
-plot_model(
-  model3,
-  transform = "exp",         # convert log-odds → odds ratios
-  value.offset = .3,         # moves numeric labels slightly right
-  vline.color = "grey50",    # OR=1 reference line
-  title = "Survey-weighted logistic regression (Model 3)",
-  order.terms = "desc"
-)
-
-
-
-
+# ===============================
+# 12) get Model 3 info and P for trend
+# ===============================
+## model stats
 tab_model(
   model3,
   transform = "exp",  # exponentiate coefficients → ORs
@@ -567,4 +554,47 @@ tab_model(
 
 
 
+# find P for trend on model 3 using Cochran-Armitage Test for all Quartiles
+train_df$IBI_trend <- as.numeric(train_df$IBI_Category)
 
+
+trend_model1 <- svyglm(CVD ~ IBI_trend, design = design_P, family = quasibinomial())
+trend_model2 <- svyglm(CVD ~ IBI_trend + Age + Gender, design = design_P, family = quasibinomial())
+trend_model3 <- svyglm(CVD ~ IBI_trend + Age + Gender + Ethnicity + Education +
+                         Smoking + Alcohol_bin + BMI + Diabetes +
+                         TOTAL_CHOLESTEROL + HDL_CHOLESTEROL + Hypertension,
+                       design = design_P,
+                       family = quasibinomial())
+
+
+
+extract_or_table <- function(model) {
+  md <- sjPlot::get_model_data(model, type = "est", transform = "exp")
+  md %>%
+    dplyr::filter(grepl("^IBI_Category", term)) %>%
+    dplyr::select(term, estimate, conf.low, conf.high, p.value)
+}
+
+
+t1 <- extract_or_table(model1)
+t2 <- extract_or_table(model2)
+t3 <- extract_or_table(model3)
+
+
+rename_ibi <- function(df) {
+  df$Quartile <- dplyr::recode(df$term,
+                               "IBI_CategoryQ1-Q2"  = "Q1–Q2",
+                               "IBI_CategoryQ2-Q3"  = "Q2–Q3",
+                               "IBI_CategoryQ3-Max" = "Q3–Max"
+  )
+  df
+}
+
+table1 <- get_model_row(model1, trend_model1)
+table2 <- get_model_row(model2, trend_model2)
+table3 <- get_model_row(model3, trend_model3)
+
+
+print(table1)
+print(table2)
+print(table3)
